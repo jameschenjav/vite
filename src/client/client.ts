@@ -35,7 +35,23 @@ declare var __VUE_HMR_RUNTIME__: HMRRuntime
 const socketProtocol =
   __HMR_PROTOCOL__ || (location.protocol === 'https:' ? 'wss' : 'ws')
 const socketHost = `${__HMR_HOSTNAME__ || location.hostname}:${__HMR_PORT__}`
-const socket = new WebSocket(`${socketProtocol}://${socketHost}`, 'vite-hmr')
+
+declare const POLL_INTERVAL: number
+declare function reloadFsEntryPoint(): void
+declare function tryReconnect(cb: () => void): void
+
+function connectViteSocket() {
+  const socket = new WebSocket(`${socketProtocol}://${socketHost}`, 'vite-hmr')
+
+  // Listen for messages
+  socket.addEventListener('message', onSocketMessage)
+
+  // ping server
+  socket.addEventListener('close', () => {
+    console.log(`[vite] server connection lost. polling for reconnect...`)
+    tryReconnect(connectViteSocket)
+  })
+}
 
 function warnFailedFetch(err: Error, path: string | string[]) {
   if (!err.message.match('fetch')) {
@@ -49,14 +65,16 @@ function warnFailedFetch(err: Error, path: string | string[]) {
 }
 
 // Listen for messages
-socket.addEventListener('message', async ({ data }) => {
+const onSocketMessage = async ({ data }: MessageEvent) => {
   const payload = JSON.parse(data) as HMRPayload | MultiUpdatePayload
   if (payload.type === 'multi') {
     payload.updates.forEach(handleMessage)
   } else {
     handleMessage(payload)
   }
-})
+}
+
+connectViteSocket()
 
 async function handleMessage(payload: HMRPayload) {
   const { path, changeSrcPath, timestamp } = payload as UpdatePayload
@@ -109,20 +127,8 @@ async function handleMessage(payload: HMRPayload) {
       }
       break
     case 'full-reload':
-      if (path.endsWith('.html')) {
-        // if html file is edited, only reload the page if the browser is
-        // currently on that page.
-        const pagePath = location.pathname
-        if (
-          pagePath === path ||
-          (pagePath.endsWith('/') && pagePath + 'index.html' === path)
-        ) {
-          location.reload()
-        }
-        return
-      } else {
-        location.reload()
-      }
+      reloadFsEntryPoint()
+      break
   }
 }
 
@@ -145,20 +151,6 @@ async function queueUpdate(p: Promise<(() => void) | undefined>) {
     ;(await Promise.all(loading)).forEach((fn) => fn && fn())
   }
 }
-
-// ping server
-socket.addEventListener('close', () => {
-  console.log(`[vite] server connection lost. polling for restart...`)
-  setInterval(() => {
-    fetch('/')
-      .then(() => {
-        location.reload()
-      })
-      .catch((e) => {
-        /* ignore */
-      })
-  }, 1000)
-})
 
 // https://wicg.github.io/construct-stylesheets
 const supportsConstructedSheet = (() => {
